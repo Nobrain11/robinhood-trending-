@@ -40,7 +40,7 @@ def env_int(
     try:
         return int(value)
 
-    except ValueError:
+    except (ValueError, TypeError):
 
         logger.warning(
             "Invalid %s=%r. Using %s.",
@@ -68,7 +68,7 @@ def get_value(
     if obj is None:
         return default
 
-    # Dictionary
+    # Dictionary / AttributeDict
     if isinstance(obj, dict):
 
         for name in names:
@@ -84,6 +84,7 @@ def get_value(
         if hasattr(obj, name):
 
             try:
+
                 return getattr(
                     obj,
                     name,
@@ -126,9 +127,15 @@ def normalize_address(
 
         if len(value) == 20:
 
-            return Web3.to_checksum_address(
-                "0x" + value.hex()
-            )
+            try:
+
+                return Web3.to_checksum_address(
+                    "0x" + value.hex()
+                )
+
+            except Exception:
+
+                return "0x" + value.hex()
 
         return "0x" + value.hex()
 
@@ -229,7 +236,6 @@ class ChainClient:
     ) -> list:
 
         if to_block < from_block:
-
             return []
 
         pending_ranges = [
@@ -241,14 +247,20 @@ class ChainClient:
 
         results = []
 
-        max_retries = env_int(
-            "RPC_RETRIES",
-            4,
+        max_retries = max(
+            1,
+            env_int(
+                "RPC_RETRIES",
+                4,
+            ),
         )
 
-        minimum_range = env_int(
-            "RPC_MIN_BLOCK_RANGE",
-            10,
+        minimum_range = max(
+            1,
+            env_int(
+                "RPC_MIN_BLOCK_RANGE",
+                10,
+            ),
         )
 
         while pending_ranges:
@@ -263,11 +275,9 @@ class ChainClient:
             }
 
             if address:
-
                 params["address"] = address
 
             if topics:
-
                 params["topics"] = topics
 
             success = False
@@ -328,7 +338,6 @@ class ChainClient:
                         )
 
             if success:
-
                 continue
 
             # --------------------------------------------------------------
@@ -354,7 +363,6 @@ class ChainClient:
                 )
 
                 if last_error:
-
                     raise last_error
 
                 raise RuntimeError(
@@ -405,27 +413,37 @@ class ChainClient:
         # Stable ordering
         # --------------------------------------------------------------
 
-        results.sort(
-            key=lambda item: (
+        def sort_key(item):
+
+            return (
                 int(
-                    item.get(
+                    get_value(
+                        item,
                         "blockNumber",
-                        0,
+                        default=0,
                     )
+                    or 0
                 ),
                 int(
-                    item.get(
+                    get_value(
+                        item,
                         "transactionIndex",
-                        0,
+                        default=0,
                     )
+                    or 0
                 ),
                 int(
-                    item.get(
+                    get_value(
+                        item,
                         "logIndex",
-                        0,
+                        default=0,
                     )
+                    or 0
                 ),
             )
+
+        results.sort(
+            key=sort_key
         )
 
         return results
@@ -472,7 +490,6 @@ class TelegramClient:
     ) -> int | None:
 
         if not self.enabled:
-
             return None
 
         url = (
@@ -512,7 +529,6 @@ class TelegramClient:
             )
 
             if not result:
-
                 return None
 
             return result.get(
@@ -609,34 +625,45 @@ class RobinhoodBot:
         # Scanner settings
         # ------------------------------------------------------------------
 
-        self.batch_size = env_int(
-            "BACKFILL_BATCH_SIZE",
-            100,
+        self.batch_size = max(
+            1,
+            env_int(
+                "BACKFILL_BATCH_SIZE",
+                100,
+            ),
         )
 
-        self.backfill_blocks = env_int(
-            "BACKFILL_BLOCKS",
-            1000,
+        self.backfill_blocks = max(
+            1,
+            env_int(
+                "BACKFILL_BLOCKS",
+                1000,
+            ),
         )
 
-        self.poll_seconds = env_int(
-            "POLL_SECONDS",
-            2,
+        self.poll_seconds = max(
+            1,
+            env_int(
+                "POLL_SECONDS",
+                2,
+            ),
         )
 
         # ------------------------------------------------------------------
         # Pons detector
         #
         # IMPORTANT:
-        # Your actual detector has:
         #
-        #     class PonsDetector(Detector):
+        # The deployed PonsDetector is using:
         #
-        # and:
+        #     decode_launch(self, log)
         #
-        #     decode_launch(w3, log)
+        # NOT:
         #
-        # So we instantiate it with NO arguments.
+        #     decode_launch(self, w3, log)
+        #
+        # Therefore we instantiate it without arguments and call
+        # decode_launch(log).
         # ------------------------------------------------------------------
 
         self.pons = PonsDetector()
@@ -733,7 +760,7 @@ class RobinhoodBot:
                 )
 
         # ------------------------------------------------------------------
-        # Pons's known deployment start
+        # Pons known start block
         # ------------------------------------------------------------------
 
         pons_start = getattr(
@@ -744,12 +771,14 @@ class RobinhoodBot:
 
         if pons_start is None:
 
-            pons_start = (
-                PonsDetector.start_block
+            pons_start = getattr(
+                PonsDetector,
+                "start_block",
+                0,
             )
 
         # ------------------------------------------------------------------
-        # Normal bounded backfill
+        # Bounded backfill
         # ------------------------------------------------------------------
 
         latest = (
@@ -801,22 +830,27 @@ class RobinhoodBot:
         try:
 
             # --------------------------------------------------------------
-            # Decode using the ACTUAL PonsDetector API.
+            # IMPORTANT FIX
+            #
+            # PonsDetector.decode_launch() in the deployed detector accepts
+            # only:
+            #
+            #     decode_launch(self, log)
+            #
+            # Therefore DO NOT pass self.chain.w3 here.
             # --------------------------------------------------------------
 
             launch = (
                 self.pons.decode_launch(
-                    self.chain.w3,
-                    log,
+                    log
                 )
             )
 
             if launch is None:
-
                 return
 
             # --------------------------------------------------------------
-            # Extract basic launch information
+            # Extract launch information
             # --------------------------------------------------------------
 
             token_address = normalize_address(
@@ -876,7 +910,10 @@ class RobinhoodBot:
                 "hex",
             ):
 
-                tx_hash = tx_hash.hex()
+                try:
+                    tx_hash = tx_hash.hex()
+                except Exception:
+                    tx_hash = str(tx_hash)
 
             if not tx_hash:
 
@@ -890,7 +927,10 @@ class RobinhoodBot:
                     "hex",
                 ):
 
-                    tx_hash = raw_tx.hex()
+                    try:
+                        tx_hash = raw_tx.hex()
+                    except Exception:
+                        tx_hash = str(raw_tx)
 
                 else:
 
@@ -936,9 +976,7 @@ class RobinhoodBot:
             )
 
             # --------------------------------------------------------------
-            # DUPLICATE PROTECTION
-            #
-            # Prefer transaction + log index when available.
+            # Duplicate protection
             # --------------------------------------------------------------
 
             unique_key = (
@@ -1008,7 +1046,7 @@ class RobinhoodBot:
             except TypeError:
 
                 # ----------------------------------------------------------
-                # Compatibility fallback for databases expecting a dict.
+                # Compatibility fallback
                 # ----------------------------------------------------------
 
                 launch_data = {
@@ -1054,8 +1092,8 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # Some database implementations return None on success.
-            # We still alert unless they explicitly report False.
+            # Explicit False means duplicate/existing.
+            # None is treated as successful for compatibility.
             # --------------------------------------------------------------
 
             if inserted is False:
@@ -1172,7 +1210,10 @@ class RobinhoodBot:
             "hex",
         ):
 
-            tx_hash = tx_hash.hex()
+            try:
+                tx_hash = tx_hash.hex()
+            except Exception:
+                tx_hash = str(tx_hash)
 
         block_number = get_value(
             launch,
@@ -1255,7 +1296,6 @@ class RobinhoodBot:
     ):
 
         if to_block < from_block:
-
             return
 
         logger.info(
@@ -1292,7 +1332,7 @@ class RobinhoodBot:
             )
 
         # --------------------------------------------------------------
-        # CHECKPOINT ONLY AFTER SUCCESS
+        # Checkpoint only after complete successful scan
         # --------------------------------------------------------------
 
         self.db.set_state(
@@ -1346,13 +1386,7 @@ class RobinhoodBot:
                     end,
                 )
 
-                # ----------------------------------------------------------
-                # IMPORTANT:
-                #
-                # Don't advance current.
-                # Retry the failed range.
-                # ----------------------------------------------------------
-
+                # Do not advance past failed range.
                 time.sleep(
                     5
                 )
@@ -1384,9 +1418,19 @@ class RobinhoodBot:
             "Entering live monitoring mode"
         )
 
-        saved = self.db.get_state(
-            "last_scanned_block"
-        )
+        try:
+
+            saved = self.db.get_state(
+                "last_scanned_block"
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Could not read live scan checkpoint"
+            )
+
+            saved = None
 
         if saved is not None:
 
@@ -1466,7 +1510,6 @@ class RobinhoodBot:
     ):
 
         if not self.running:
-
             return
 
         logger.info(
@@ -1488,7 +1531,6 @@ class RobinhoodBot:
         self.backfill()
 
         if not self.running:
-
             return
 
         self.live_loop()
@@ -1505,7 +1547,6 @@ def main():
             "LOG_LEVEL",
             "INFO",
         ).upper(),
-
         format=(
             "%(asctime)s | "
             "%(levelname)s | "
