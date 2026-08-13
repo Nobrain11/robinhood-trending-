@@ -9,28 +9,28 @@ class TelegramPublisher:
         self,
         bot_token,
         chat_id,
-        timeout=15,
+        timeout=20,
     ):
+
         self.chat_id = chat_id
+
         self.timeout = timeout
 
         self.base = (
-            f"https://api.telegram.org/"
+            "https://api.telegram.org/"
             f"bot{bot_token}"
         )
 
-    def send(
+
+    def _request(
         self,
-        text,
+        method,
+        payload,
     ):
+
         response = requests.post(
-            f"{self.base}/sendMessage",
-            json={
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
+            f"{self.base}/{method}",
+            json=payload,
             timeout=self.timeout,
         )
 
@@ -39,15 +39,63 @@ class TelegramPublisher:
         data = response.json()
 
         if not data.get("ok"):
-            raise RuntimeError(data)
+
+            raise RuntimeError(
+                data
+            )
+
+        return data["result"]
+
+
+    def send(
+        self,
+        text,
+    ):
+
+        result = self._request(
+            "sendMessage",
+            {
+                "chat_id": self.chat_id,
+
+                "text": text,
+
+                "parse_mode": "HTML",
+
+                "disable_web_page_preview": True,
+            },
+        )
 
         return int(
-            data["result"]["message_id"]
+            result["message_id"]
+        )
+
+
+    def edit(
+        self,
+        message_id,
+        text,
+    ):
+
+        self._request(
+            "editMessageText",
+            {
+                "chat_id": self.chat_id,
+
+                "message_id": message_id,
+
+                "text": text,
+
+                "parse_mode": "HTML",
+
+                "disable_web_page_preview": True,
+            },
         )
 
 
 def esc(value):
+
     if value is None:
+
         return "—"
 
     return html.escape(
@@ -55,58 +103,34 @@ def esc(value):
     )
 
 
-def short_address(value):
-    if not value:
+def short_address(
+    address,
+):
+
+    if not address:
+
         return "—"
 
     return (
-        f"{value[:6]}"
-        f"…"
-        f"{value[-4:]}"
+        address[:6]
+        + "…"
+        + address[-4:]
     )
 
 
-def build_launch_message(
+def launch_message(
     launch,
     explorer_base,
 ):
-    token = launch["token_address"]
-
-    tx = launch["tx_hash"]
-
-    name = (
-        launch.get("name")
-        or "Unknown Token"
-    )
-
-    symbol = (
-        launch.get("symbol")
-        or "UNKNOWN"
-    )
-
-    deployer = launch.get(
-        "deployer"
-    )
-
-    pool = launch.get(
-        "pool_address"
-    )
-
-    pair = launch.get(
-        "pair_token"
-    )
-
-    initial_buy = launch.get(
-        "initial_buy_amount"
-    )
 
     return (
         "🚨 <b>"
         "NEW ROBINHOOD CHAIN LAUNCH"
         "</b>\n\n"
 
-        f"🪙 <b>${esc(symbol)}</b>"
-        f" — {esc(name)}\n"
+        f"🪙 <b>${esc(launch['symbol'])}"
+        f"</b> — "
+        f"{esc(launch['name'])}\n\n"
 
         f"🚀 <b>Launchpad:</b> "
         f"{esc(launch['detector'])}\n"
@@ -114,33 +138,88 @@ def build_launch_message(
         f"📦 <b>Block:</b> "
         f"{launch['block_number']}\n"
 
-        f"💰 <b>Initial buy:</b> "
-        f"{esc(initial_buy)}\n\n"
+        f"💧 <b>Pool:</b> "
+        f"<code>"
+        f"{esc(short_address(launch['pool_address']))}"
+        f"</code>\n\n"
 
-        f"📜 <b>Contract:</b> "
-        f"<code>{esc(token)}</code>\n"
+        f"📜 <b>Contract</b>\n"
+        f"<code>{esc(launch['token_address'])}"
+        f"</code>\n\n"
 
         f"👤 <b>Deployer:</b> "
-        f"<code>{esc(short_address(deployer))}"
-        f"</code>\n"
-
-        f"💧 <b>Pool:</b> "
-        f"<code>{esc(short_address(pool))}"
-        f"</code>\n"
-
-        f"🪙 <b>Pair:</b> "
-        f"<code>{esc(short_address(pair))}"
+        f"<code>"
+        f"{esc(short_address(launch['deployer']))}"
         f"</code>\n\n"
 
         f'<a href="{explorer_base}'
-        f'/address/{token}">'
-        f'Contract</a> · '
+        f'/address/{launch["token_address"]}">'
+        f'Explorer</a> · '
 
         f'<a href="{explorer_base}'
-        f'/tx/{tx}">'
-        f'TX</a> · '
+        f'/tx/{launch["tx_hash"]}">'
+        f'Transaction</a>'
+    )
 
-        f'<a href="{explorer_base}'
-        f'/address/{pool}">'
-        f'Pool</a>'
+
+def trending_message(
+    launch,
+    metrics,
+):
+
+    return (
+        "🔥 <b>"
+        "TRENDING ON ROBINHOOD CHAIN"
+        "</b>\n\n"
+
+        f"🪙 <b>${esc(launch['symbol'])}"
+        f"</b> — "
+        f"{esc(launch['name'])}\n\n"
+
+        f"⚡ <b>Score:</b> "
+        f"{metrics.score:.0f}/100\n\n"
+
+        f"💰 <b>Volume:</b> "
+        f"{metrics.volume_quote:.4f} WETH\n"
+
+        f"🟢 <b>Buys:</b> "
+        f"{metrics.buys}\n"
+
+        f"🔴 <b>Sells:</b> "
+        f"{metrics.sells}\n"
+
+        f"👥 <b>Buyers:</b> "
+        f"{metrics.unique_buyers}\n"
+
+        f"📊 <b>Swaps:</b> "
+        f"{metrics.swap_count}\n"
+
+        f"📈 <b>Buy pressure:</b> "
+        f"{metrics.buy_ratio * 100:.1f}%\n\n"
+
+        f"🚀 <b>{esc(launch['detector'])}</b>"
+    )
+
+
+def graduation_message(
+    launch,
+):
+
+    return (
+        "🎓 <b>"
+        "GRADUATED"
+        "</b>\n\n"
+
+        f"🪙 <b>${esc(launch['symbol'])}"
+        f"</b> — "
+        f"{esc(launch['name'])}\n\n"
+
+        f"🚀 <b>Launchpad:</b> "
+        f"{esc(launch['detector'])}\n"
+
+        f"📜 <b>Contract:</b>\n"
+        f"<code>{esc(launch['token_address'])}"
+        f"</code>\n\n"
+
+        "Trading continues in the same pool."
     )
