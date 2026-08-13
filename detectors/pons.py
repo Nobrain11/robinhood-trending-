@@ -1,7 +1,12 @@
 from web3 import Web3
-from web3._utils.events import get_event_data
 
-from detectors.base import Launch
+from web3._utils.events import (
+    get_event_data,
+)
+
+from detectors.base import Detector
+
+from app.models import Launch
 
 
 PONS_FACTORY = (
@@ -17,10 +22,21 @@ PONS_TOKEN_LAUNCHED_TOPIC = (
 )
 
 
+PONS_SWAP_TOPIC = (
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+)
+
+
+PONS_WETH = (
+    "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+)
+
+
 TOKEN_LAUNCHED_ABI = {
     "anonymous": False,
 
     "inputs": [
+
         {
             "indexed": True,
             "name": "token",
@@ -88,7 +104,7 @@ TOKEN_LAUNCHED_ABI = {
 }
 
 
-class PonsDetector:
+class PonsDetector(Detector):
 
     name = "pons"
 
@@ -100,11 +116,13 @@ class PonsDetector:
 
     start_block = PONS_START_BLOCK
 
-    def decode(
+
+    def decode_launch(
         self,
         w3,
         log,
     ):
+
         decoded = get_event_data(
             w3.codec,
             TOKEN_LAUNCHED_ABI,
@@ -113,24 +131,38 @@ class PonsDetector:
 
         args = decoded["args"]
 
+
+        token = Web3.to_checksum_address(
+            args["token"]
+        )
+
+
+        deployer = Web3.to_checksum_address(
+            args["deployer"]
+        )
+
+
+        pool = Web3.to_checksum_address(
+            args["pool"]
+        )
+
+
+        pair_token = Web3.to_checksum_address(
+            args["pairToken"]
+        )
+
+
         return Launch(
+
             detector=self.name,
 
-            token_address=Web3.to_checksum_address(
-                args["token"]
-            ),
+            token_address=token,
 
-            deployer=Web3.to_checksum_address(
-                args["deployer"]
-            ),
+            deployer=deployer,
 
-            pool_address=Web3.to_checksum_address(
-                args["pool"]
-            ),
+            pool_address=pool,
 
-            pair_token=Web3.to_checksum_address(
-                args["pairToken"]
-            ),
+            pair_token=pair_token,
 
             tx_hash=log[
                 "transactionHash"
@@ -144,7 +176,7 @@ class PonsDetector:
                 "logIndex"
             ],
 
-            initial_buy_amount=str(
+            initial_buy_amount=int(
                 args["initialBuyAmount"]
             ),
         )
