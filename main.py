@@ -1,5 +1,6 @@
-from app.main import main
+from app.main import RobinhoodBot
 
 
 if __name__ == "__main__":
-    main()
+    bot = RobinhoodBot()
+    bot.run()
