@@ -1,22 +1,3 @@
-"""
-Robinhood Chain Launch Bot
---------------------------
-
-Main application:
-
-- Connects to Robinhood Chain
-- Validates chain ID
-- Performs bounded backfill
-- Persists the last scanned block
-- Processes launch detector events
-- Stores launches in SQLite
-- Sends Telegram alerts
-- Switches into live polling mode
-
-This version deliberately keeps detector-specific logic outside
-the main application where possible.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -34,21 +15,22 @@ from app.config import Settings
 from app.database import Database
 
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
+# ============================================================================
+# LOGGING
+# ============================================================================
 
 logger = logging.getLogger("robinhood-launch-bot")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ============================================================================
+# ENVIRONMENT HELPERS
+# ============================================================================
 
 def env_int(
     name: str,
     default: int,
 ) -> int:
+
     value = os.getenv(name)
 
     if value is None or value.strip() == "":
@@ -56,13 +38,16 @@ def env_int(
 
     try:
         return int(value)
+
     except ValueError:
+
         logger.warning(
-            "Invalid integer for %s=%r; using %s",
+            "Invalid integer for %s=%r. Using %s.",
             name,
             value,
             default,
         )
+
         return default
 
 
@@ -70,6 +55,7 @@ def env_bool(
     name: str,
     default: bool = False,
 ) -> bool:
+
     value = os.getenv(name)
 
     if value is None:
@@ -83,6 +69,10 @@ def env_bool(
     }
 
 
+# ============================================================================
+# GENERIC VALUE HELPERS
+# ============================================================================
+
 def normalize_address(
     value: Any,
 ) -> str | None:
@@ -91,7 +81,9 @@ def normalize_address(
         return None
 
     if isinstance(value, bytes):
+
         if len(value) == 20:
+
             return Web3.to_checksum_address(
                 "0x" + value.hex()
             )
@@ -100,10 +92,19 @@ def normalize_address(
 
     value = str(value)
 
-    if value.startswith("0x") and len(value) == 42:
+    if (
+        value.startswith("0x")
+        and len(value) == 42
+    ):
+
         try:
-            return Web3.to_checksum_address(value)
+
+            return Web3.to_checksum_address(
+                value
+            )
+
         except Exception:
+
             return value
 
     return value
@@ -115,71 +116,99 @@ def get_value(
     default: Any = None,
 ) -> Any:
     """
-    Safely retrieve a value from:
+    Safely extract a value from:
 
-    - dictionaries
-    - dataclasses
-    - objects
-    - tuples/lists containing mappings
+    - dict
+    - dataclass
+    - object
+    - tuple
+    - list
 
-    This is important because older detector implementations may
-    return tuples while newer implementations return dictionaries.
+    This prevents the old:
+
+        state["isToken0"]
+
+    tuple/dict crash.
     """
 
     if obj is None:
         return default
 
+    # ------------------------------------------------------------------
     # Dictionary
+    # ------------------------------------------------------------------
+
     if isinstance(obj, dict):
 
         for name in names:
+
             if name in obj:
                 return obj[name]
 
-        # Case-insensitive fallback
         lowered = {
-            str(k).lower(): v
-            for k, v in obj.items()
+            str(key).lower(): value
+            for key, value in obj.items()
         }
 
         for name in names:
+
             if name.lower() in lowered:
-                return lowered[name.lower()]
+
+                return lowered[
+                    name.lower()
+                ]
 
         return default
 
+    # ------------------------------------------------------------------
     # Dataclass
+    # ------------------------------------------------------------------
+
     if is_dataclass(obj):
 
-        data = asdict(obj)
+        try:
+
+            data = asdict(obj)
+
+        except Exception:
+
+            data = {}
 
         for name in names:
+
             if name in data:
+
                 return data[name]
-
-        lowered = {
-            str(k).lower(): v
-            for k, v in data.items()
-        }
-
-        for name in names:
-            if name.lower() in lowered:
-                return lowered[name.lower()]
 
         return default
 
+    # ------------------------------------------------------------------
     # Object attributes
+    # ------------------------------------------------------------------
+
     for name in names:
 
         if hasattr(obj, name):
 
             try:
-                return getattr(obj, name)
+
+                return getattr(
+                    obj,
+                    name,
+                )
+
             except Exception:
+
                 pass
 
-    # Tuple/list containing a dictionary/object
-    if isinstance(obj, (tuple, list)):
+    # ------------------------------------------------------------------
+    # Tuple/list compatibility
+    # ------------------------------------------------------------------
+
+    if isinstance(
+        obj,
+        (tuple, list),
+    ):
 
         for item in obj:
 
@@ -190,22 +219,76 @@ def get_value(
             )
 
             if value is not None:
+
                 return value
 
     return default
 
 
-# ---------------------------------------------------------------------------
-# Chain client
-# ---------------------------------------------------------------------------
+# ============================================================================
+# NORMALIZED LAUNCH
+# ============================================================================
+
+class NormalizedLaunch:
+
+    def __init__(
+        self,
+        detector: str,
+        token_address: str,
+        deployer: str | None,
+        pool_address: str | None,
+        pair_token: str | None,
+        tx_hash: str,
+        block_number: int,
+        log_index: int,
+        launch_timestamp: int,
+        name: str,
+        symbol: str,
+        decimals: int,
+        supply: Any,
+        initial_buy_amount: Any,
+        is_token0: bool | None,
+        pool_fee: int | None,
+    ):
+
+        self.detector = detector
+
+        self.token_address = token_address
+
+        self.deployer = deployer
+
+        self.pool_address = pool_address
+
+        self.pair_token = pair_token
+
+        self.tx_hash = tx_hash
+
+        self.block_number = block_number
+
+        self.log_index = log_index
+
+        self.launch_timestamp = launch_timestamp
+
+        self.name = name
+
+        self.symbol = symbol
+
+        self.decimals = decimals
+
+        self.supply = supply
+
+        self.initial_buy_amount = initial_buy_amount
+
+        self.is_token0 = is_token0
+
+        self.pool_fee = pool_fee
+
+
+# ============================================================================
+# CHAIN CLIENT
+# ============================================================================
 
 class ChainClient:
-    """
-    Lightweight Web3 client.
-
-    This class intentionally doesn't assume that the RPC provider
-    supports enormous log queries.
-    """
 
     def __init__(
         self,
@@ -215,7 +298,10 @@ class ChainClient:
     ):
 
         self.rpc_url = rpc_url
+
         self.expected_chain_id = chain_id
+
+        self.request_timeout = request_timeout
 
         self.w3 = Web3(
             HTTPProvider(
@@ -228,6 +314,10 @@ class ChainClient:
 
         self._validate_connection()
 
+    # ------------------------------------------------------------------
+    # RPC connection
+    # ------------------------------------------------------------------
+
     def _validate_connection(self):
 
         logger.info(
@@ -238,7 +328,8 @@ class ChainClient:
         if not self.w3.is_connected():
 
             raise RuntimeError(
-                f"Unable to connect to RPC: {self.rpc_url}"
+                "Unable to connect to RPC: "
+                f"{self.rpc_url}"
             )
 
         actual = self.w3.eth.chain_id
@@ -256,10 +347,18 @@ class ChainClient:
                 f"received {actual}"
             )
 
+    # ------------------------------------------------------------------
+    # Latest block
+    # ------------------------------------------------------------------
+
     @property
     def latest_block(self) -> int:
 
         return self.w3.eth.block_number
+
+    # ------------------------------------------------------------------
+    # Robust eth_getLogs
+    # ------------------------------------------------------------------
 
     def get_logs(
         self,
@@ -267,33 +366,224 @@ class ChainClient:
         to_block: int,
         address: str | None = None,
         topics: list | None = None,
-    ):
+    ) -> list:
 
-        params = {
-            "fromBlock": from_block,
-            "toBlock": to_block,
-        }
+        """
+        Robust eth_getLogs implementation.
 
-        if address:
-            params["address"] = address
+        Strategy:
 
-        if topics:
-            params["topics"] = topics
+        1. Try the requested range.
+        2. Retry transient RPC failures.
+        3. If it continues failing, split the range in half.
+        4. Continue until successful.
+        5. Never mark a block range complete until it succeeds.
 
-        return self.w3.eth.get_logs(params)
+        This protects the bot from RPC timeout errors.
+        """
+
+        if to_block < from_block:
+
+            return []
+
+        pending = [
+            (
+                from_block,
+                to_block,
+            )
+        ]
+
+        all_logs = []
+
+        max_retries = env_int(
+            "RPC_RETRIES",
+            4,
+        )
+
+        min_range = env_int(
+            "RPC_MIN_BLOCK_RANGE",
+            10,
+        )
+
+        while pending:
+
+            current_from, current_to = (
+                pending.pop(0)
+            )
+
+            params = {
+                "fromBlock": current_from,
+                "toBlock": current_to,
+            }
+
+            if address:
+
+                params["address"] = address
+
+            if topics:
+
+                params["topics"] = topics
+
+            success = False
+
+            last_error = None
+
+            for attempt in range(
+                1,
+                max_retries + 1,
+            ):
+
+                try:
+
+                    result = (
+                        self.w3.eth.get_logs(
+                            params
+                        )
+                    )
+
+                    all_logs.extend(
+                        result
+                    )
+
+                    success = True
+
+                    break
+
+                except Exception as exc:
+
+                    last_error = exc
+
+                    logger.warning(
+                        "RPC getLogs failed "
+                        "(attempt %s/%s) "
+                        "for blocks %s -> %s: %s",
+                        attempt,
+                        max_retries,
+                        current_from,
+                        current_to,
+                        exc,
+                    )
+
+                    if attempt < max_retries:
+
+                        delay = min(
+                            2 ** (attempt - 1),
+                            8,
+                        )
+
+                        time.sleep(
+                            delay
+                        )
+
+            if success:
+
+                continue
+
+            # ----------------------------------------------------------
+            # Repeated failure.
+            #
+            # Split the range.
+            # ----------------------------------------------------------
+
+            range_size = (
+                current_to
+                - current_from
+                + 1
+            )
+
+            if range_size <= min_range:
+
+                logger.error(
+                    "RPC failed even for "
+                    "small range %s -> %s",
+                    current_from,
+                    current_to,
+                )
+
+                if last_error:
+
+                    raise last_error
+
+                raise RuntimeError(
+                    "RPC getLogs failed"
+                )
+
+            midpoint = (
+                current_from
+                + (
+                    range_size // 2
+                )
+                - 1
+            )
+
+            left = (
+                current_from,
+                midpoint,
+            )
+
+            right = (
+                midpoint + 1,
+                current_to,
+            )
+
+            logger.warning(
+                "Splitting RPC range "
+                "%s -> %s into "
+                "%s -> %s and %s -> %s",
+                current_from,
+                current_to,
+                left[0],
+                left[1],
+                right[0],
+                right[1],
+            )
+
+            # Insert in order.
+            pending.insert(
+                0,
+                right,
+            )
+
+            pending.insert(
+                0,
+                left,
+            )
+
+        # --------------------------------------------------------------
+        # Sort logs deterministically.
+        # --------------------------------------------------------------
+
+        all_logs.sort(
+            key=lambda log: (
+                int(
+                    log.get(
+                        "blockNumber",
+                        0,
+                    )
+                ),
+                int(
+                    log.get(
+                        "transactionIndex",
+                        0,
+                    )
+                ),
+                int(
+                    log.get(
+                        "logIndex",
+                        0,
+                    )
+                ),
+            )
+        )
+
+        return all_logs
 
 
-# ---------------------------------------------------------------------------
-# Telegram
-# ---------------------------------------------------------------------------
+# ============================================================================
+# TELEGRAM
+# ============================================================================
 
 class TelegramClient:
-    """
-    Minimal Telegram Bot API client.
-
-    Uses requests rather than a long-running Telegram framework because
-    this application is a chain worker.
-    """
 
     def __init__(
         self,
@@ -302,17 +592,20 @@ class TelegramClient:
     ):
 
         self.token = token
+
         self.chat_id = chat_id
 
         self.enabled = bool(
-            self.token and self.chat_id
+            token
+            and chat_id
         )
 
         if not self.enabled:
 
             logger.warning(
                 "Telegram disabled: "
-                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
+                "TELEGRAM_BOT_TOKEN or "
+                "TELEGRAM_CHAT_ID missing"
             )
 
     def send_message(
@@ -321,12 +614,13 @@ class TelegramClient:
     ) -> int | None:
 
         if not self.enabled:
+
             return None
 
         import requests
 
         url = (
-            f"https://api.telegram.org/"
+            "https://api.telegram.org/"
             f"bot{self.token}/sendMessage"
         )
 
@@ -375,9 +669,9 @@ class TelegramClient:
             return None
 
 
-# ---------------------------------------------------------------------------
-# Main bot
-# ---------------------------------------------------------------------------
+# ============================================================================
+# ROBINHOOD BOT
+# ============================================================================
 
 class RobinhoodBot:
 
@@ -387,11 +681,19 @@ class RobinhoodBot:
 
         self.settings = Settings()
 
+        # --------------------------------------------------------------
+        # Chain
+        # --------------------------------------------------------------
+
         self.chain = ChainClient(
             self.settings.rpc_url,
             self.settings.chain_id,
             self.settings.request_timeout,
         )
+
+        # --------------------------------------------------------------
+        # Database
+        # --------------------------------------------------------------
 
         database_path = getattr(
             self.settings,
@@ -410,7 +712,11 @@ class RobinhoodBot:
             database_path
         )
 
-        self.telegram = TelegramClient(
+        # --------------------------------------------------------------
+        # Telegram
+        # --------------------------------------------------------------
+
+        telegram_token = (
             getattr(
                 self.settings,
                 "telegram_bot_token",
@@ -418,8 +724,10 @@ class RobinhoodBot:
             )
             or os.getenv(
                 "TELEGRAM_BOT_TOKEN"
-            ),
+            )
+        )
 
+        telegram_chat_id = (
             getattr(
                 self.settings,
                 "telegram_chat_id",
@@ -427,8 +735,17 @@ class RobinhoodBot:
             )
             or os.getenv(
                 "TELEGRAM_CHAT_ID"
-            ),
+            )
         )
+
+        self.telegram = TelegramClient(
+            telegram_token,
+            telegram_chat_id,
+        )
+
+        # --------------------------------------------------------------
+        # Scanning configuration
+        # --------------------------------------------------------------
 
         self.batch_size = env_int(
             "BACKFILL_BATCH_SIZE",
@@ -445,9 +762,13 @@ class RobinhoodBot:
             2,
         )
 
-        self.start_block = self._calculate_start_block()
+        # --------------------------------------------------------------
+        # Detector
+        # --------------------------------------------------------------
 
-        self.detectors = self._load_detectors()
+        self.detectors = (
+            self._load_detectors()
+        )
 
         logger.info(
             "Detectors: %s",
@@ -457,23 +778,33 @@ class RobinhoodBot:
             or "none",
         )
 
-    # ------------------------------------------------------------------
-    # Detectors
-    # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # Starting point
+        # --------------------------------------------------------------
+
+        self.start_block = (
+            self._calculate_start_block()
+        )
+
+    # ==================================================================
+    # DETECTORS
+    # ==================================================================
 
     def _load_detectors(self):
 
         detectors = []
 
-        # Pons is optional so the bot can still boot if the detector
-        # file is not present yet.
-
         try:
 
-            from detectors.pons import PonsDetector
+            from detectors.pons import (
+                PonsDetector,
+            )
 
-            detector = PonsDetector(
-                self.chain.w3
+            detector = (
+                PonsDetector()
+                .set_web3(
+                    self.chain.w3
+                )
             )
 
             detectors.append(
@@ -508,21 +839,34 @@ class RobinhoodBot:
             )
 
             if name:
-                names.append(str(name))
+
+                names.append(
+                    str(name)
+                )
+
             else:
+
                 names.append(
                     detector.__class__.__name__
                 )
 
         return names
 
-    # ------------------------------------------------------------------
-    # Block state
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # START BLOCK
+    # ==================================================================
 
-    def _calculate_start_block(self) -> int:
+    def _calculate_start_block(
+        self,
+    ) -> int:
 
-        latest = self.chain.latest_block
+        latest = (
+            self.chain.latest_block
+        )
+
+        # --------------------------------------------------------------
+        # Saved checkpoint
+        # --------------------------------------------------------------
 
         saved = self.db.get_state(
             "last_scanned_block"
@@ -532,14 +876,18 @@ class RobinhoodBot:
 
             try:
 
-                saved_block = int(saved)
+                saved_block = int(
+                    saved
+                )
 
                 logger.info(
                     "Resuming from block %s",
                     saved_block,
                 )
 
-                return saved_block + 1
+                return (
+                    saved_block + 1
+                )
 
             except ValueError:
 
@@ -547,6 +895,12 @@ class RobinhoodBot:
                     "Invalid saved block: %r",
                     saved,
                 )
+
+        # --------------------------------------------------------------
+        # Explicit START_BLOCK
+        #
+        # Supported for historical scanning, but not recommended.
+        # --------------------------------------------------------------
 
         explicit = os.getenv(
             "START_BLOCK"
@@ -556,10 +910,13 @@ class RobinhoodBot:
 
             try:
 
-                block = int(explicit)
+                block = int(
+                    explicit
+                )
 
-                logger.info(
-                    "Using START_BLOCK=%s",
+                logger.warning(
+                    "Using explicit "
+                    "START_BLOCK=%s",
                     block,
                 )
 
@@ -572,9 +929,14 @@ class RobinhoodBot:
                     explicit,
                 )
 
+        # --------------------------------------------------------------
+        # Normal bounded backfill
+        # --------------------------------------------------------------
+
         start = max(
             0,
-            latest - self.backfill_blocks,
+            latest
+            - self.backfill_blocks,
         )
 
         logger.info(
@@ -586,14 +948,14 @@ class RobinhoodBot:
 
         return start
 
-    # ------------------------------------------------------------------
-    # Detector execution
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # DETECTION
+    # ==================================================================
 
     def detect_launches(
         self,
         log: Any,
-    ) -> list[Any]:
+    ) -> list:
 
         launches = []
 
@@ -601,7 +963,6 @@ class RobinhoodBot:
 
             try:
 
-                # New detector API
                 if hasattr(
                     detector,
                     "detect",
@@ -611,27 +972,40 @@ class RobinhoodBot:
                         log
                     )
 
-                # Compatibility with detectors that use
-                # process_log().
                 elif hasattr(
                     detector,
                     "process_log",
                 ):
 
-                    result = detector.process_log(
-                        log
+                    result = (
+                        detector.process_log(
+                            log
+                        )
+                    )
+
+                elif hasattr(
+                    detector,
+                    "decode_launch",
+                ):
+
+                    result = (
+                        detector.decode_launch(
+                            log
+                        )
                     )
 
                 else:
 
                     logger.warning(
-                        "Detector %s has no detect/process_log method",
-                        detector,
+                        "Detector %s has no "
+                        "compatible detection method",
+                        detector.__class__.__name__,
                     )
 
                     continue
 
                 if result is None:
+
                     continue
 
                 if isinstance(
@@ -658,9 +1032,9 @@ class RobinhoodBot:
 
         return launches
 
-    # ------------------------------------------------------------------
-    # Launch processing
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # PROCESS LOG
+    # ==================================================================
 
     def process_launch_log(
         self,
@@ -669,11 +1043,14 @@ class RobinhoodBot:
 
         try:
 
-            launches = self.detect_launches(
-                log
+            launches = (
+                self.detect_launches(
+                    log
+                )
             )
 
             if not launches:
+
                 return
 
             for launch in launches:
@@ -689,6 +1066,10 @@ class RobinhoodBot:
                 "Launch processing failed"
             )
 
+    # ==================================================================
+    # PROCESS LAUNCH
+    # ==================================================================
+
     def process_launch(
         self,
         launch: Any,
@@ -696,16 +1077,10 @@ class RobinhoodBot:
     ):
 
         """
-        Normalize a detector result.
+        Convert detector output into the normalized form used by
+        the database and Telegram layer.
 
-        The old code directly did:
-
-            state["isToken0"]
-
-        which failed when state was a tuple.
-
-        Everything below uses get_value(), so dictionaries,
-        dataclasses, objects and nested tuple/list results are handled.
+        This specifically avoids the old tuple problem.
         """
 
         tx_hash = get_value(
@@ -809,16 +1184,6 @@ class RobinhoodBot:
             default=None,
         )
 
-        # ----------------------------------------------------------------
-        # THIS IS THE FIX FOR YOUR ERROR.
-        #
-        # Never do:
-        #
-        #     state["isToken0"]
-        #
-        # because state may be a tuple.
-        # ----------------------------------------------------------------
-
         is_token0 = get_value(
             launch,
             "isToken0",
@@ -840,32 +1205,14 @@ class RobinhoodBot:
             "launch_timestamp",
             "launchTimestamp",
             "timestamp",
-            default=int(time.time()),
+            default=int(
+                time.time()
+            ),
         )
 
-        token_address = normalize_address(
-            token_address
-        )
-
-        deployer = normalize_address(
-            deployer
-        )
-
-        pool_address = normalize_address(
-            pool_address
-        )
-
-        pair_token = normalize_address(
-            pair_token
-        )
-
-        if not token_address:
-
-            logger.warning(
-                "Detector returned launch without token address"
-            )
-
-            return
+        # --------------------------------------------------------------
+        # Fallback to raw log
+        # --------------------------------------------------------------
 
         if block_number is None:
 
@@ -892,9 +1239,41 @@ class RobinhoodBot:
 
             tx_hash = tx_hash.hex()
 
-        # ----------------------------------------------------------------
-        # Database-compatible launch object
-        # ----------------------------------------------------------------
+        token_address = (
+            normalize_address(
+                token_address
+            )
+        )
+
+        deployer = (
+            normalize_address(
+                deployer
+            )
+        )
+
+        pool_address = (
+            normalize_address(
+                pool_address
+            )
+        )
+
+        pair_token = (
+            normalize_address(
+                pair_token
+            )
+        )
+
+        if not token_address:
+
+            logger.warning(
+                "Launch has no token address"
+            )
+
+            return
+
+        # --------------------------------------------------------------
+        # Normalize
+        # --------------------------------------------------------------
 
         normalized = NormalizedLaunch(
             detector=str(
@@ -909,7 +1288,9 @@ class RobinhoodBot:
 
             pair_token=pair_token,
 
-            tx_hash=str(tx_hash),
+            tx_hash=str(
+                tx_hash
+            ),
 
             block_number=int(
                 block_number
@@ -937,20 +1318,30 @@ class RobinhoodBot:
 
             supply=supply,
 
-            initial_buy_amount=initial_buy_amount,
+            initial_buy_amount=(
+                initial_buy_amount
+            ),
 
             is_token0=(
-                bool(is_token0)
+                bool(
+                    is_token0
+                )
                 if is_token0 is not None
                 else None
             ),
 
             pool_fee=(
-                int(pool_fee)
+                int(
+                    pool_fee
+                )
                 if pool_fee is not None
                 else None
             ),
         )
+
+        # --------------------------------------------------------------
+        # Database
+        # --------------------------------------------------------------
 
         inserted = self.db.insert_launch(
             normalized
@@ -960,7 +1351,7 @@ class RobinhoodBot:
 
             logger.debug(
                 "Launch already exists: %s",
-                token_address,
+                normalized.token_address,
             )
 
             return
@@ -972,28 +1363,45 @@ class RobinhoodBot:
             normalized.token_address,
         )
 
-        message = self.format_launch_message(
-            normalized
+        # --------------------------------------------------------------
+        # Telegram
+        # --------------------------------------------------------------
+
+        message = (
+            self.format_launch_message(
+                normalized
+            )
         )
 
-        message_id = self.telegram.send_message(
-            message
+        message_id = (
+            self.telegram.send_message(
+                message
+            )
         )
 
         if message_id:
 
-            self.db.update_launch_message(
-                normalized.token_address,
-                message_id,
-            )
+            try:
 
-    # ------------------------------------------------------------------
-    # Telegram message
-    # ------------------------------------------------------------------
+                self.db.update_launch_message(
+                    normalized.token_address,
+                    message_id,
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to save Telegram "
+                    "message ID"
+                )
+
+    # ==================================================================
+    # TELEGRAM MESSAGE
+    # ==================================================================
 
     def format_launch_message(
         self,
-        launch: "NormalizedLaunch",
+        launch: NormalizedLaunch,
     ) -> str:
 
         lines = [
@@ -1013,10 +1421,26 @@ class RobinhoodBot:
                 f"💧 Pool: {launch.pool_address}"
             )
 
+        if launch.pair_token:
+
+            lines.append(
+                f"💱 Pair: {launch.pair_token}"
+            )
+
         if launch.deployer:
 
             lines.append(
                 f"👤 Deployer: {launch.deployer}"
+            )
+
+        if (
+            launch.initial_buy_amount
+            is not None
+        ):
+
+            lines.append(
+                "💰 Initial buy: "
+                f"{launch.initial_buy_amount}"
             )
 
         if launch.tx_hash:
@@ -1036,9 +1460,9 @@ class RobinhoodBot:
             lines
         )
 
-    # ------------------------------------------------------------------
-    # Scan range
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # SCANNING
+    # ==================================================================
 
     def scan_range(
         self,
@@ -1047,6 +1471,7 @@ class RobinhoodBot:
     ):
 
         if to_block < from_block:
+
             return
 
         logger.info(
@@ -1055,10 +1480,51 @@ class RobinhoodBot:
             to_block,
         )
 
-        # Some detectors may expose their own log filter.
-        # If so, use it. Otherwise get all logs for the range.
+        # --------------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Only request logs emitted by the Pons factory and matching
+        # TokenLaunched.
+        #
+        # This dramatically reduces RPC traffic.
+        # --------------------------------------------------------------
+
+        address = None
+
+        topics = None
+
+        try:
+
+            from detectors.pons import (
+                PonsDetector,
+            )
+
+            address = (
+                PonsDetector.address
+            )
+
+            topics = [
+                PonsDetector.topic0
+            ]
+
+        except Exception:
+
+            logger.warning(
+                "Unable to load Pons RPC filter; "
+                "falling back to unfiltered logs"
+            )
 
         logs = self.chain.get_logs(
+            from_block,
+            to_block,
+            address=address,
+            topics=topics,
+        )
+
+        logger.debug(
+            "Received %s relevant logs "
+            "for blocks %s -> %s",
+            len(logs),
             from_block,
             to_block,
         )
@@ -1069,18 +1535,24 @@ class RobinhoodBot:
                 log
             )
 
+        # --------------------------------------------------------------
+        # CHECKPOINT ONLY AFTER SUCCESS
+        # --------------------------------------------------------------
+
         self.db.set_state(
             "last_scanned_block",
             str(to_block),
         )
 
-    # ------------------------------------------------------------------
-    # Backfill
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # BACKFILL
+    # ==================================================================
 
     def backfill(self):
 
-        latest = self.chain.latest_block
+        latest = (
+            self.chain.latest_block
+        )
 
         start = self.start_block
 
@@ -1108,7 +1580,9 @@ class RobinhoodBot:
         ):
 
             end = min(
-                current + self.batch_size - 1,
+                current
+                + self.batch_size
+                - 1,
                 latest,
             )
 
@@ -1122,32 +1596,42 @@ class RobinhoodBot:
             except Exception:
 
                 logger.exception(
-                    "Backfill failed at blocks %s -> %s",
+                    "Backfill failed at "
+                    "blocks %s -> %s",
                     current,
                     end,
                 )
 
-                # Do not spin at 100% CPU if the RPC rejects
-                # a request.
+                # ------------------------------------------------------
+                # Do not advance current.
+                #
+                # The failed range will be retried.
+                # ------------------------------------------------------
 
-                time.sleep(3)
+                time.sleep(
+                    3
+                )
 
                 continue
 
-            current = end + 1
+            current = (
+                end + 1
+            )
 
             logger.info(
                 "Backfill at block %s",
                 current,
             )
 
-        logger.info(
-            "Backfill complete"
-        )
+        if self.running:
 
-    # ------------------------------------------------------------------
-    # Live mode
-    # ------------------------------------------------------------------
+            logger.info(
+                "Backfill complete"
+            )
+
+    # ==================================================================
+    # LIVE LOOP
+    # ==================================================================
 
     def live_loop(self):
 
@@ -1155,21 +1639,40 @@ class RobinhoodBot:
             "Entering live monitoring mode"
         )
 
-        next_block = (
-            int(
-                self.db.get_state(
-                    "last_scanned_block"
-                )
-                or self.chain.latest_block
-            )
-            + 1
+        saved = self.db.get_state(
+            "last_scanned_block"
         )
+
+        if saved is not None:
+
+            try:
+
+                next_block = (
+                    int(saved)
+                    + 1
+                )
+
+            except ValueError:
+
+                next_block = (
+                    self.chain.latest_block
+                    + 1
+                )
+
+        else:
+
+            next_block = (
+                self.chain.latest_block
+                + 1
+            )
 
         while self.running:
 
             try:
 
-                latest = self.chain.latest_block
+                latest = (
+                    self.chain.latest_block
+                )
 
                 if latest < next_block:
 
@@ -1191,7 +1694,9 @@ class RobinhoodBot:
                     end,
                 )
 
-                next_block = end + 1
+                next_block = (
+                    end + 1
+                )
 
             except Exception:
 
@@ -1206,9 +1711,9 @@ class RobinhoodBot:
                     )
                 )
 
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # SHUTDOWN
+    # ==================================================================
 
     def stop(
         self,
@@ -1216,6 +1721,7 @@ class RobinhoodBot:
     ):
 
         if not self.running:
+
             return
 
         logger.info(
@@ -1224,9 +1730,9 @@ class RobinhoodBot:
 
         self.running = False
 
-    # ------------------------------------------------------------------
-    # Run
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # RUN
+    # ==================================================================
 
     def run(self):
 
@@ -1237,73 +1743,15 @@ class RobinhoodBot:
         self.backfill()
 
         if not self.running:
+
             return
 
         self.live_loop()
 
 
-# ---------------------------------------------------------------------------
-# Normalized launch model
-# ---------------------------------------------------------------------------
-
-class NormalizedLaunch:
-
-    def __init__(
-        self,
-        detector: str,
-        token_address: str,
-        deployer: str | None,
-        pool_address: str | None,
-        pair_token: str | None,
-        tx_hash: str,
-        block_number: int,
-        log_index: int,
-        launch_timestamp: int,
-        name: str,
-        symbol: str,
-        decimals: int,
-        supply: Any,
-        initial_buy_amount: Any,
-        is_token0: bool | None,
-        pool_fee: int | None,
-    ):
-
-        self.detector = detector
-
-        self.token_address = token_address
-
-        self.deployer = deployer
-
-        self.pool_address = pool_address
-
-        self.pair_token = pair_token
-
-        self.tx_hash = tx_hash
-
-        self.block_number = block_number
-
-        self.log_index = log_index
-
-        self.launch_timestamp = launch_timestamp
-
-        self.name = name
-
-        self.symbol = symbol
-
-        self.decimals = decimals
-
-        self.supply = supply
-
-        self.initial_buy_amount = initial_buy_amount
-
-        self.is_token0 = is_token0
-
-        self.pool_fee = pool_fee
-
-
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+# ============================================================================
+# ENTRYPOINT
+# ============================================================================
 
 def main():
 
@@ -1329,6 +1777,7 @@ def main():
     ):
 
         if bot is not None:
+
             bot.stop(
                 signum,
                 frame,
@@ -1366,4 +1815,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
