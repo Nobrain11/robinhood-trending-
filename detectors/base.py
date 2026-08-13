@@ -1,41 +1,9 @@
-from dataclasses import dataclass
-from typing import Protocol
+from abc import ABC, abstractmethod
+
+from app.models import Launch
 
 
-@dataclass
-class Launch:
-
-    detector: str
-
-    token_address: str
-
-    deployer: str | None
-
-    pool_address: str | None
-
-    pair_token: str | None
-
-    tx_hash: str
-
-    block_number: int
-
-    log_index: int
-
-    initial_buy_amount: str | None = None
-
-    name: str | None = None
-
-    symbol: str | None = None
-
-    decimals: int | None = None
-
-    metadata_json: str | None = None
-
-    def as_dict(self):
-        return self.__dict__.copy()
-
-
-class Detector(Protocol):
+class Detector(ABC):
 
     name: str
 
@@ -45,9 +13,12 @@ class Detector(Protocol):
 
     start_block: int
 
-    def decode(
+
+    @abstractmethod
+    def decode_launch(
         self,
         w3,
         log,
     ) -> Launch:
-        ...
+
+        raise NotImplementedError
