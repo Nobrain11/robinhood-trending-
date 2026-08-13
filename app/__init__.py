@@ -1,1 +1,1 @@
-from app.main import main
+# app package
