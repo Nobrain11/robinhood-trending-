@@ -1,149 +1,157 @@
-import time
+import os
 
-from web3 import Web3
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
 
 
-class ChainClient:
+load_dotenv()
 
-    def __init__(
-        self,
-        rpc_url: str,
-        chain_id: int,
-    ):
-        self.w3 = Web3(
-            Web3.HTTPProvider(
-                rpc_url,
-                request_kwargs={
-                    "timeout": 20,
-                },
+
+def env_int(
+    name: str,
+    default: int,
+) -> int:
+
+    value = os.getenv(name)
+
+    if value in (None, ""):
+        return default
+
+    return int(value)
+
+
+def env_float(
+    name: str,
+    default: float,
+) -> float:
+
+    value = os.getenv(name)
+
+    if value in (None, ""):
+        return default
+
+    return float(value)
+
+
+@dataclass(frozen=True)
+class Settings:
+
+    chain_id: int = env_int(
+        "CHAIN_ID",
+        4663,
+    )
+
+    rpc_url: str = os.getenv(
+        "RPC_URL",
+        "https://rpc.mainnet.chain.robinhood.com",
+    )
+
+    ws_url: str = os.getenv(
+        "WS_URL",
+        "wss://feed.mainnet.chain.robinhood.com",
+    )
+
+    start_block: int = env_int(
+        "START_BLOCK",
+        8991118,
+    )
+
+    block_chunk: int = env_int(
+        "BLOCK_CHUNK",
+        100,
+    )
+
+    poll_seconds: float = env_float(
+        "POLL_SECONDS",
+        2,
+    )
+
+    confirmations: int = env_int(
+        "CONFIRMATIONS",
+        0,
+    )
+
+    db_path: str = os.getenv(
+        "DB_PATH",
+        "data/robinhood.db",
+    )
+
+    telegram_bot_token: str = os.getenv(
+        "TELEGRAM_BOT_TOKEN",
+        "",
+    )
+
+    telegram_chat_id: str = os.getenv(
+        "TELEGRAM_CHAT_ID",
+        "",
+    )
+
+    explorer_base: str = os.getenv(
+        "EXPLORER_BASE",
+        "https://robinhoodchain.blockscout.com",
+    )
+
+    trend_interval_seconds: int = env_int(
+        "TREND_INTERVAL_SECONDS",
+        60,
+    )
+
+    trend_window_seconds: int = env_int(
+        "TREND_WINDOW_SECONDS",
+        300,
+    )
+
+    trend_alert_score: float = env_float(
+        "TREND_ALERT_SCORE",
+        75,
+    )
+
+    trend_update_score: float = env_float(
+        "TREND_UPDATE_SCORE",
+        60,
+    )
+
+    trend_cooldown_seconds: int = env_int(
+        "TREND_COOLDOWN_SECONDS",
+        900,
+    )
+
+    min_swaps_for_trend: int = env_int(
+        "MIN_SWAPS_FOR_TREND",
+        10,
+    )
+
+    min_buyers_for_trend: int = env_int(
+        "MIN_BUYERS_FOR_TREND",
+        5,
+    )
+
+    request_timeout: int = env_int(
+        "REQUEST_TIMEOUT",
+        20,
+    )
+
+    max_retries: int = env_int(
+        "MAX_RETRIES",
+        5,
+    )
+
+    def validate(self):
+
+        if self.chain_id != 4663:
+            raise ValueError(
+                "This bot only supports "
+                "Robinhood Chain mainnet "
+                "chain ID 4663."
             )
-        )
 
-        actual_chain_id = self.w3.eth.chain_id
-
-        if actual_chain_id != chain_id:
-            raise RuntimeError(
-                f"Wrong chain: RPC reports "
-                f"{actual_chain_id}, expected {chain_id}"
+        if not self.telegram_bot_token:
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN is missing."
             )
 
-    @property
-    def block_number(self):
-        return self.w3.eth.block_number
-
-    def get_logs(
-        self,
-        address,
-        topic0,
-        from_block,
-        to_block,
-    ):
-        return self.w3.eth.get_logs(
-            {
-                "fromBlock": from_block,
-                "toBlock": to_block,
-                "address": Web3.to_checksum_address(
-                    address
-                ),
-                "topics": [topic0],
-            }
-        )
-
-    def retry_logs(
-        self,
-        address,
-        topic0,
-        from_block,
-        to_block,
-        retries=5,
-    ):
-        delay = 1
-        last_error = None
-
-        for _ in range(retries):
-            try:
-                return self.get_logs(
-                    address,
-                    topic0,
-                    from_block,
-                    to_block,
-                )
-
-            except Exception as exc:
-                last_error = exc
-
-                time.sleep(delay)
-
-                delay = min(
-                    delay * 2,
-                    8,
-                )
-
-        raise last_error
-
-    def read_token_metadata(
-        self,
-        token,
-    ):
-        token = Web3.to_checksum_address(
-            token
-        )
-
-        abi = [
-            {
-                "name": "name",
-                "type": "function",
-                "stateMutability": "view",
-                "inputs": [],
-                "outputs": [
-                    {
-                        "type": "string"
-                    }
-                ],
-            },
-            {
-                "name": "symbol",
-                "type": "function",
-                "stateMutability": "view",
-                "inputs": [],
-                "outputs": [
-                    {
-                        "type": "string"
-                    }
-                ],
-            },
-            {
-                "name": "decimals",
-                "type": "function",
-                "stateMutability": "view",
-                "inputs": [],
-                "outputs": [
-                    {
-                        "type": "uint8"
-                    }
-                ],
-            },
-        ]
-
-        contract = self.w3.eth.contract(
-            address=token,
-            abi=abi,
-        )
-
-        result = {}
-
-        for function_name in (
-            "name",
-            "symbol",
-            "decimals",
-        ):
-            try:
-                result[function_name] = getattr(
-                    contract.functions,
-                    function_name,
-                )().call()
-
-            except Exception:
-                result[function_name] = None
-
-        return result
+        if not self.telegram_chat_id:
+            raise ValueError(
+                "TELEGRAM_CHAT_ID is missing."
+            )
