@@ -224,7 +224,7 @@ class ChainClient:
         return self.w3.eth.block_number
 
     # ------------------------------------------------------------------------
-    # Robust getLogs
+    # ROBUST getLogs
     # ------------------------------------------------------------------------
 
     def get_logs(
@@ -285,7 +285,7 @@ class ChainClient:
             last_error = None
 
             # --------------------------------------------------------------
-            # Retry RPC request
+            # RETRY RPC REQUEST
             # --------------------------------------------------------------
 
             for attempt in range(
@@ -341,7 +341,7 @@ class ChainClient:
                 continue
 
             # --------------------------------------------------------------
-            # Split failed range
+            # SPLIT FAILED RANGE
             # --------------------------------------------------------------
 
             range_size = (
@@ -410,7 +410,7 @@ class ChainClient:
             )
 
         # --------------------------------------------------------------
-        # Stable ordering
+        # STABLE ORDERING
         # --------------------------------------------------------------
 
         def sort_key(item):
@@ -555,7 +555,7 @@ class RobinhoodBot:
         self.running = True
 
         # ------------------------------------------------------------------
-        # Settings
+        # SETTINGS
         # ------------------------------------------------------------------
 
         self.settings = Settings()
@@ -571,7 +571,7 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # Database
+        # DATABASE
         # ------------------------------------------------------------------
 
         database_path = (
@@ -591,7 +591,7 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # Telegram
+        # TELEGRAM
         # ------------------------------------------------------------------
 
         telegram_token = (
@@ -622,7 +622,7 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # Scanner settings
+        # SCANNER SETTINGS
         # ------------------------------------------------------------------
 
         self.batch_size = max(
@@ -650,30 +650,189 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # Pons detector
+        # PONS DETECTOR
+        # ------------------------------------------------------------------
         #
         # IMPORTANT:
         #
-        # The deployed PonsDetector is using:
+        # The current PonsDetector implementation expects its Web3 instance
+        # to be configured internally.
         #
-        #     decode_launch(self, log)
+        # Its decode method is:
         #
-        # NOT:
+        #     decode_launch(log)
         #
-        #     decode_launch(self, w3, log)
+        # and NOT:
         #
-        # Therefore we instantiate it without arguments and call
-        # decode_launch(log).
+        #     decode_launch(w3, log)
+        #
         # ------------------------------------------------------------------
 
         self.pons = PonsDetector()
+
+        # ------------------------------------------------------------------
+        # Configure the detector's Web3 instance.
+        #
+        # The RuntimeError from detectors/pons.py:
+        #
+        #     PonsDetector Web3 instance has not been configured
+        #
+        # proves the detector needs this.
+        # ------------------------------------------------------------------
+
+        configured = False
+
+        # Most likely/current detector attribute.
+        if hasattr(
+            self.pons,
+            "w3",
+        ):
+
+            try:
+
+                self.pons.w3 = (
+                    self.chain.w3
+                )
+
+                configured = True
+
+                logger.info(
+                    "Configured PonsDetector Web3 instance"
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Could not configure "
+                    "PonsDetector.w3"
+                )
+
+        # Compatibility with detectors that use _w3.
+        if not configured and hasattr(
+            self.pons,
+            "_w3",
+        ):
+
+            try:
+
+                self.pons._w3 = (
+                    self.chain.w3
+                )
+
+                configured = True
+
+                logger.info(
+                    "Configured PonsDetector _w3 instance"
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Could not configure "
+                    "PonsDetector._w3"
+                )
+
+        # Compatibility with detectors that use web3.
+        if not configured and hasattr(
+            self.pons,
+            "web3",
+        ):
+
+            try:
+
+                self.pons.web3 = (
+                    self.chain.w3
+                )
+
+                configured = True
+
+                logger.info(
+                    "Configured PonsDetector web3 instance"
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Could not configure "
+                    "PonsDetector.web3"
+                )
+
+        # Compatibility with a detector setter.
+        if not configured:
+
+            configure_method = getattr(
+                self.pons,
+                "set_web3",
+                None,
+            )
+
+            if callable(
+                configure_method
+            ):
+
+                try:
+
+                    configure_method(
+                        self.chain.w3
+                    )
+
+                    configured = True
+
+                    logger.info(
+                        "Configured PonsDetector "
+                        "using set_web3()"
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        "PonsDetector.set_web3() failed"
+                    )
+
+        if not configured:
+
+            configure_method = getattr(
+                self.pons,
+                "configure",
+                None,
+            )
+
+            if callable(
+                configure_method
+            ):
+
+                try:
+
+                    configure_method(
+                        self.chain.w3
+                    )
+
+                    configured = True
+
+                    logger.info(
+                        "Configured PonsDetector "
+                        "using configure()"
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        "PonsDetector.configure() failed"
+                    )
+
+        if not configured:
+
+            logger.warning(
+                "Could not automatically identify "
+                "PonsDetector Web3 configuration attribute"
+            )
 
         logger.info(
             "Detectors: pons"
         )
 
         # ------------------------------------------------------------------
-        # Starting block
+        # STARTING BLOCK
         # ------------------------------------------------------------------
 
         self.start_block = (
@@ -687,7 +846,7 @@ class RobinhoodBot:
     def get_start_block(self) -> int:
 
         # ------------------------------------------------------------------
-        # Existing checkpoint
+        # DATABASE CHECKPOINT
         # ------------------------------------------------------------------
 
         try:
@@ -730,7 +889,7 @@ class RobinhoodBot:
                 )
 
         # ------------------------------------------------------------------
-        # Explicit START_BLOCK
+        # EXPLICIT START_BLOCK
         # ------------------------------------------------------------------
 
         start_block_env = os.getenv(
@@ -760,7 +919,7 @@ class RobinhoodBot:
                 )
 
         # ------------------------------------------------------------------
-        # Pons known start block
+        # PONS START BLOCK
         # ------------------------------------------------------------------
 
         pons_start = getattr(
@@ -778,7 +937,7 @@ class RobinhoodBot:
             )
 
         # ------------------------------------------------------------------
-        # Bounded backfill
+        # BOUNDED BACKFILL
         # ------------------------------------------------------------------
 
         latest = (
@@ -830,14 +989,11 @@ class RobinhoodBot:
         try:
 
             # --------------------------------------------------------------
-            # IMPORTANT FIX
+            # CORRECT CURRENT API
             #
-            # PonsDetector.decode_launch() in the deployed detector accepts
-            # only:
+            # PonsDetector.decode_launch(log)
             #
-            #     decode_launch(self, log)
-            #
-            # Therefore DO NOT pass self.chain.w3 here.
+            # Web3 has already been configured on the detector above.
             # --------------------------------------------------------------
 
             launch = (
@@ -850,7 +1006,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # Extract launch information
+            # TOKEN
             # --------------------------------------------------------------
 
             token_address = normalize_address(
@@ -869,6 +1025,10 @@ class RobinhoodBot:
                 )
 
                 return
+
+            # --------------------------------------------------------------
+            # BASIC FIELDS
+            # --------------------------------------------------------------
 
             detector_name = get_value(
                 launch,
@@ -911,9 +1071,14 @@ class RobinhoodBot:
             ):
 
                 try:
+
                     tx_hash = tx_hash.hex()
+
                 except Exception:
-                    tx_hash = str(tx_hash)
+
+                    tx_hash = str(
+                        tx_hash
+                    )
 
             if not tx_hash:
 
@@ -928,9 +1093,14 @@ class RobinhoodBot:
                 ):
 
                     try:
+
                         tx_hash = raw_tx.hex()
+
                     except Exception:
-                        tx_hash = str(raw_tx)
+
+                        tx_hash = str(
+                            raw_tx
+                        )
 
                 else:
 
@@ -976,7 +1146,7 @@ class RobinhoodBot:
             )
 
             # --------------------------------------------------------------
-            # Duplicate protection
+            # DUPLICATE KEY
             # --------------------------------------------------------------
 
             unique_key = (
@@ -1014,7 +1184,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # Log launch
+            # LOG DETECTION
             # --------------------------------------------------------------
 
             logger.info(
@@ -1030,7 +1200,7 @@ class RobinhoodBot:
             )
 
             # --------------------------------------------------------------
-            # Save to database
+            # DATABASE INSERT
             # --------------------------------------------------------------
 
             inserted = False
@@ -1044,10 +1214,6 @@ class RobinhoodBot:
                 )
 
             except TypeError:
-
-                # ----------------------------------------------------------
-                # Compatibility fallback
-                # ----------------------------------------------------------
 
                 launch_data = {
                     "detector": str(
@@ -1075,11 +1241,23 @@ class RobinhoodBot:
                     ),
                 }
 
-                inserted = (
-                    self.db.insert_launch(
-                        launch_data
+                try:
+
+                    inserted = (
+                        self.db.insert_launch(
+                            launch_data
+                        )
                     )
-                )
+
+                except Exception:
+
+                    logger.exception(
+                        "Database insert failed "
+                        "for token %s",
+                        token_address,
+                    )
+
+                    return
 
             except Exception:
 
@@ -1092,8 +1270,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # Explicit False means duplicate/existing.
-            # None is treated as successful for compatibility.
+            # EXPLICIT FALSE = DUPLICATE
             # --------------------------------------------------------------
 
             if inserted is False:
@@ -1106,7 +1283,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # Telegram
+            # TELEGRAM
             # --------------------------------------------------------------
 
             message = (
@@ -1154,7 +1331,7 @@ class RobinhoodBot:
             )
 
     # ======================================================================
-    # TELEGRAM FORMAT
+    # TELEGRAM MESSAGE
     # ======================================================================
 
     def format_launch_message(
@@ -1211,9 +1388,14 @@ class RobinhoodBot:
         ):
 
             try:
+
                 tx_hash = tx_hash.hex()
+
             except Exception:
-                tx_hash = str(tx_hash)
+
+                tx_hash = str(
+                    tx_hash
+                )
 
         block_number = get_value(
             launch,
@@ -1305,7 +1487,7 @@ class RobinhoodBot:
         )
 
         # --------------------------------------------------------------
-        # Pons-only RPC filter
+        # GET PONS EVENTS
         # --------------------------------------------------------------
 
         logs = self.get_pons_logs(
@@ -1322,7 +1504,7 @@ class RobinhoodBot:
         )
 
         # --------------------------------------------------------------
-        # Decode every matching event
+        # PROCESS EVENTS
         # --------------------------------------------------------------
 
         for log in logs:
@@ -1332,7 +1514,7 @@ class RobinhoodBot:
             )
 
         # --------------------------------------------------------------
-        # Checkpoint only after complete successful scan
+        # CHECKPOINT ONLY AFTER SCAN
         # --------------------------------------------------------------
 
         self.db.set_state(
@@ -1386,7 +1568,7 @@ class RobinhoodBot:
                     end,
                 )
 
-                # Do not advance past failed range.
+                # Do not advance past a failed range.
                 time.sleep(
                     5
                 )
@@ -1409,7 +1591,7 @@ class RobinhoodBot:
             )
 
     # ======================================================================
-    # LIVE MONITOR
+    # LIVE LOOP
     # ======================================================================
 
     def live_loop(self):
@@ -1537,7 +1719,7 @@ class RobinhoodBot:
 
 
 # ============================================================================
-# MAIN ENTRYPOINT
+# MAIN
 # ============================================================================
 
 def main():
