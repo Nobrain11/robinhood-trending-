@@ -40,7 +40,7 @@ def env_int(
     try:
         return int(value)
 
-    except (ValueError, TypeError):
+    except ValueError:
 
         logger.warning(
             "Invalid %s=%r. Using %s.",
@@ -62,13 +62,14 @@ def get_value(
     default: Any = None,
 ) -> Any:
     """
-    Safely read values from dictionaries, objects, tuples and lists.
+    Safely read values from dictionaries, objects,
+    tuples and lists.
     """
 
     if obj is None:
         return default
 
-    # Dictionary / AttributeDict
+    # Dictionary
     if isinstance(obj, dict):
 
         for name in names:
@@ -127,15 +128,9 @@ def normalize_address(
 
         if len(value) == 20:
 
-            try:
-
-                return Web3.to_checksum_address(
-                    "0x" + value.hex()
-                )
-
-            except Exception:
-
-                return "0x" + value.hex()
+            return Web3.to_checksum_address(
+                "0x" + value.hex()
+            )
 
         return "0x" + value.hex()
 
@@ -207,10 +202,7 @@ class ChainClient:
             actual_chain_id,
         )
 
-        if (
-            actual_chain_id
-            != chain_id
-        ):
+        if actual_chain_id != chain_id:
 
             raise RuntimeError(
                 "Wrong chain ID: "
@@ -224,7 +216,7 @@ class ChainClient:
         return self.w3.eth.block_number
 
     # ------------------------------------------------------------------------
-    # ROBUST getLogs
+    # Robust getLogs
     # ------------------------------------------------------------------------
 
     def get_logs(
@@ -247,20 +239,14 @@ class ChainClient:
 
         results = []
 
-        max_retries = max(
-            1,
-            env_int(
-                "RPC_RETRIES",
-                4,
-            ),
+        max_retries = env_int(
+            "RPC_RETRIES",
+            4,
         )
 
-        minimum_range = max(
-            1,
-            env_int(
-                "RPC_MIN_BLOCK_RANGE",
-                10,
-            ),
+        minimum_range = env_int(
+            "RPC_MIN_BLOCK_RANGE",
+            10,
         )
 
         while pending_ranges:
@@ -281,11 +267,10 @@ class ChainClient:
                 params["topics"] = topics
 
             success = False
-
             last_error = None
 
             # --------------------------------------------------------------
-            # RETRY RPC REQUEST
+            # Retry RPC request
             # --------------------------------------------------------------
 
             for attempt in range(
@@ -295,15 +280,11 @@ class ChainClient:
 
                 try:
 
-                    logs = (
-                        self.w3.eth.get_logs(
-                            params
-                        )
+                    logs = self.w3.eth.get_logs(
+                        params
                     )
 
-                    results.extend(
-                        logs
-                    )
+                    results.extend(logs)
 
                     success = True
 
@@ -327,21 +308,17 @@ class ChainClient:
                     if attempt < max_retries:
 
                         delay = min(
-                            2 ** (
-                                attempt - 1
-                            ),
+                            2 ** (attempt - 1),
                             8,
                         )
 
-                        time.sleep(
-                            delay
-                        )
+                        time.sleep(delay)
 
             if success:
                 continue
 
             # --------------------------------------------------------------
-            # SPLIT FAILED RANGE
+            # Split failed range
             # --------------------------------------------------------------
 
             range_size = (
@@ -350,10 +327,7 @@ class ChainClient:
                 + 1
             )
 
-            if (
-                range_size
-                <= minimum_range
-            ):
+            if range_size <= minimum_range:
 
                 logger.error(
                     "RPC failed even after "
@@ -410,40 +384,30 @@ class ChainClient:
             )
 
         # --------------------------------------------------------------
-        # STABLE ORDERING
+        # Stable ordering
         # --------------------------------------------------------------
 
-        def sort_key(item):
-
-            return (
+        results.sort(
+            key=lambda item: (
                 int(
-                    get_value(
-                        item,
+                    item.get(
                         "blockNumber",
-                        default=0,
+                        0,
                     )
-                    or 0
                 ),
                 int(
-                    get_value(
-                        item,
+                    item.get(
                         "transactionIndex",
-                        default=0,
+                        0,
                     )
-                    or 0
                 ),
                 int(
-                    get_value(
-                        item,
+                    item.get(
                         "logIndex",
-                        default=0,
+                        0,
                     )
-                    or 0
                 ),
             )
-
-        results.sort(
-            key=sort_key
         )
 
         return results
@@ -455,25 +419,46 @@ class ChainClient:
 
 class TelegramClient:
 
+    MAX_MESSAGE_LENGTH = 4096
+
     def __init__(
         self,
         bot_token: str | None,
         chat_id: str | None,
     ):
 
-        self.bot_token = bot_token
+        self.bot_token = (
+            str(bot_token).strip()
+            if bot_token
+            else None
+        )
 
-        self.chat_id = chat_id
+        self.chat_id = (
+            str(chat_id).strip()
+            if chat_id
+            else None
+        )
 
         self.enabled = bool(
-            bot_token
-            and chat_id
+            self.bot_token
+            and self.chat_id
         )
 
         if self.enabled:
 
+            # Never log the actual bot token.
+            masked_token = (
+                self.bot_token[:8]
+                + "..."
+                if len(self.bot_token) > 8
+                else "***"
+            )
+
             logger.info(
-                "Telegram alerts enabled"
+                "Telegram alerts enabled "
+                "(token=%s, chat_id=%s)",
+                masked_token,
+                self.chat_id,
             )
 
         else:
@@ -490,7 +475,38 @@ class TelegramClient:
     ) -> int | None:
 
         if not self.enabled:
+
+            logger.debug(
+                "Telegram disabled; "
+                "message was not sent"
+            )
+
             return None
+
+        if not text:
+
+            logger.warning(
+                "Telegram message is empty"
+            )
+
+            return None
+
+        # --------------------------------------------------------------
+        # Telegram sendMessage has a 4096-character text limit.
+        # --------------------------------------------------------------
+
+        if len(text) > self.MAX_MESSAGE_LENGTH:
+
+            logger.warning(
+                "Telegram message too long "
+                "(%s chars). Truncating to %s.",
+                len(text),
+                self.MAX_MESSAGE_LENGTH,
+            )
+
+            text = text[
+                : self.MAX_MESSAGE_LENGTH - 20
+            ] + "\n...[truncated]"
 
         url = (
             "https://api.telegram.org/"
@@ -503,45 +519,213 @@ class TelegramClient:
             "disable_web_page_preview": True,
         }
 
-        try:
+        max_retries = env_int(
+            "TELEGRAM_RETRIES",
+            3,
+        )
 
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=20,
-            )
+        for attempt in range(
+            1,
+            max_retries + 1,
+        ):
 
-            response.raise_for_status()
+            try:
 
-            data = response.json()
+                response = requests.post(
+                    url,
+                    json=payload,
+                    timeout=20,
+                )
 
-            if not data.get("ok"):
+                # ------------------------------------------------------
+                # IMPORTANT:
+                #
+                # Do NOT call raise_for_status() before reading
+                # Telegram's response body.
+                #
+                # Telegram normally tells us the actual problem in:
+                #
+                # {"ok":false,"error_code":400,
+                #  "description":"..."}
+                # ------------------------------------------------------
 
-                logger.error(
-                    "Telegram API error: %s",
-                    data,
+                if not response.ok:
+
+                    try:
+
+                        error_data = (
+                            response.json()
+                        )
+
+                    except Exception:
+
+                        error_data = (
+                            response.text
+                        )
+
+                    logger.error(
+                        "Telegram API HTTP error "
+                        "(status=%s, attempt=%s/%s): %s",
+                        response.status_code,
+                        attempt,
+                        max_retries,
+                        error_data,
+                    )
+
+                    # --------------------------------------------------
+                    # 400 is normally a permanent configuration/request
+                    # problem. Retrying it won't fix a bad chat ID.
+                    # --------------------------------------------------
+
+                    if response.status_code == 400:
+
+                        logger.error(
+                            "Telegram returned HTTP 400. "
+                            "Check TELEGRAM_CHAT_ID, "
+                            "make sure the bot has access to the "
+                            "chat/channel, and inspect the Telegram "
+                            "description above."
+                        )
+
+                        return None
+
+                    # --------------------------------------------------
+                    # 401 means the bot token is invalid.
+                    # --------------------------------------------------
+
+                    if response.status_code == 401:
+
+                        logger.error(
+                            "Telegram returned HTTP 401. "
+                            "The bot token is invalid/revoked. "
+                            "Create a new token and update "
+                            "TELEGRAM_BOT_TOKEN."
+                        )
+
+                        return None
+
+                    # --------------------------------------------------
+                    # Retry temporary server/rate-limit errors.
+                    # --------------------------------------------------
+
+                    if attempt < max_retries:
+
+                        delay = min(
+                            2 ** (attempt - 1),
+                            10,
+                        )
+
+                        time.sleep(delay)
+
+                        continue
+
+                    return None
+
+                # ------------------------------------------------------
+                # Successful HTTP response
+                # ------------------------------------------------------
+
+                try:
+
+                    data = response.json()
+
+                except Exception:
+
+                    logger.error(
+                        "Telegram returned invalid JSON: %s",
+                        response.text,
+                    )
+
+                    return None
+
+                if not data.get("ok"):
+
+                    logger.error(
+                        "Telegram API returned ok=false: %s",
+                        data,
+                    )
+
+                    return None
+
+                result = data.get(
+                    "result"
+                )
+
+                if not result:
+
+                    logger.error(
+                        "Telegram response had no result: %s",
+                        data,
+                    )
+
+                    return None
+
+                message_id = result.get(
+                    "message_id"
+                )
+
+                logger.info(
+                    "Telegram message sent "
+                    "successfully: message_id=%s",
+                    message_id,
+                )
+
+                return message_id
+
+            except requests.exceptions.Timeout:
+
+                logger.warning(
+                    "Telegram request timed out "
+                    "(attempt %s/%s)",
+                    attempt,
+                    max_retries,
+                )
+
+                if attempt < max_retries:
+
+                    time.sleep(
+                        min(
+                            2 ** (attempt - 1),
+                            10,
+                        )
+                    )
+
+                    continue
+
+                return None
+
+            except requests.exceptions.RequestException as exc:
+
+                logger.warning(
+                    "Telegram request failed "
+                    "(attempt %s/%s): %s",
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+
+                if attempt < max_retries:
+
+                    time.sleep(
+                        min(
+                            2 ** (attempt - 1),
+                            10,
+                        )
+                    )
+
+                    continue
+
+                return None
+
+            except Exception:
+
+                logger.exception(
+                    "Unexpected Telegram send failure"
                 )
 
                 return None
 
-            result = data.get(
-                "result"
-            )
-
-            if not result:
-                return None
-
-            return result.get(
-                "message_id"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Telegram send failed"
-            )
-
-            return None
+        return None
 
 
 # ============================================================================
@@ -555,7 +739,7 @@ class RobinhoodBot:
         self.running = True
 
         # ------------------------------------------------------------------
-        # SETTINGS
+        # Settings
         # ------------------------------------------------------------------
 
         self.settings = Settings()
@@ -571,7 +755,7 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # DATABASE
+        # Database
         # ------------------------------------------------------------------
 
         database_path = (
@@ -591,7 +775,7 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # TELEGRAM
+        # Telegram
         # ------------------------------------------------------------------
 
         telegram_token = (
@@ -622,222 +806,175 @@ class RobinhoodBot:
         )
 
         # ------------------------------------------------------------------
-        # SCANNER SETTINGS
+        # Scanner settings
         # ------------------------------------------------------------------
 
-        self.batch_size = max(
-            1,
-            env_int(
-                "BACKFILL_BATCH_SIZE",
-                100,
-            ),
+        self.batch_size = env_int(
+            "BACKFILL_BATCH_SIZE",
+            100,
         )
 
-        self.backfill_blocks = max(
-            1,
-            env_int(
-                "BACKFILL_BLOCKS",
-                1000,
-            ),
+        self.backfill_blocks = env_int(
+            "BACKFILL_BLOCKS",
+            1000,
         )
 
-        self.poll_seconds = max(
-            1,
-            env_int(
-                "POLL_SECONDS",
-                2,
-            ),
+        self.poll_seconds = env_int(
+            "POLL_SECONDS",
+            2,
         )
 
         # ------------------------------------------------------------------
-        # PONS DETECTOR
-        # ------------------------------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # The current PonsDetector implementation expects its Web3 instance
-        # to be configured internally.
-        #
-        # Its decode method is:
-        #
-        #     decode_launch(log)
-        #
-        # and NOT:
-        #
-        #     decode_launch(w3, log)
-        #
+        # Pons detector
         # ------------------------------------------------------------------
 
         self.pons = PonsDetector()
 
         # ------------------------------------------------------------------
-        # Configure the detector's Web3 instance.
+        # IMPORTANT:
         #
-        # The RuntimeError from detectors/pons.py:
+        # Your current PonsDetector.decode_launch(log) expects the
+        # detector to already have a Web3 instance configured.
         #
-        #     PonsDetector Web3 instance has not been configured
-        #
-        # proves the detector needs this.
+        # Configure it here.
         # ------------------------------------------------------------------
 
-        configured = False
-
-        # Most likely/current detector attribute.
-        if hasattr(
-            self.pons,
-            "w3",
-        ):
-
-            try:
-
-                self.pons.w3 = (
-                    self.chain.w3
-                )
-
-                configured = True
-
-                logger.info(
-                    "Configured PonsDetector Web3 instance"
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "Could not configure "
-                    "PonsDetector.w3"
-                )
-
-        # Compatibility with detectors that use _w3.
-        if not configured and hasattr(
-            self.pons,
-            "_w3",
-        ):
-
-            try:
-
-                self.pons._w3 = (
-                    self.chain.w3
-                )
-
-                configured = True
-
-                logger.info(
-                    "Configured PonsDetector _w3 instance"
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "Could not configure "
-                    "PonsDetector._w3"
-                )
-
-        # Compatibility with detectors that use web3.
-        if not configured and hasattr(
-            self.pons,
-            "web3",
-        ):
-
-            try:
-
-                self.pons.web3 = (
-                    self.chain.w3
-                )
-
-                configured = True
-
-                logger.info(
-                    "Configured PonsDetector web3 instance"
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "Could not configure "
-                    "PonsDetector.web3"
-                )
-
-        # Compatibility with a detector setter.
-        if not configured:
-
-            configure_method = getattr(
-                self.pons,
-                "set_web3",
-                None,
-            )
-
-            if callable(
-                configure_method
-            ):
-
-                try:
-
-                    configure_method(
-                        self.chain.w3
-                    )
-
-                    configured = True
-
-                    logger.info(
-                        "Configured PonsDetector "
-                        "using set_web3()"
-                    )
-
-                except Exception:
-
-                    logger.exception(
-                        "PonsDetector.set_web3() failed"
-                    )
-
-        if not configured:
-
-            configure_method = getattr(
-                self.pons,
-                "configure",
-                None,
-            )
-
-            if callable(
-                configure_method
-            ):
-
-                try:
-
-                    configure_method(
-                        self.chain.w3
-                    )
-
-                    configured = True
-
-                    logger.info(
-                        "Configured PonsDetector "
-                        "using configure()"
-                    )
-
-                except Exception:
-
-                    logger.exception(
-                        "PonsDetector.configure() failed"
-                    )
-
-        if not configured:
-
-            logger.warning(
-                "Could not automatically identify "
-                "PonsDetector Web3 configuration attribute"
-            )
+        self.configure_pons_web3()
 
         logger.info(
             "Detectors: pons"
         )
 
         # ------------------------------------------------------------------
-        # STARTING BLOCK
+        # Starting block
         # ------------------------------------------------------------------
 
         self.start_block = (
             self.get_start_block()
         )
+
+    # ======================================================================
+    # PONS WEB3 CONFIGURATION
+    # ======================================================================
+
+    def configure_pons_web3(self):
+
+        configured = False
+
+        # --------------------------------------------------------------
+        # Support common detector configuration method names.
+        # --------------------------------------------------------------
+
+        for method_name in (
+            "set_web3",
+            "set_w3",
+            "configure_web3",
+            "configure_w3",
+        ):
+
+            method = getattr(
+                self.pons,
+                method_name,
+                None,
+            )
+
+            if callable(method):
+
+                try:
+
+                    method(
+                        self.chain.w3
+                    )
+
+                    logger.info(
+                        "Configured PonsDetector Web3 "
+                        "using %s()",
+                        method_name,
+                    )
+
+                    configured = True
+
+                    break
+
+                except TypeError:
+
+                    # Some implementations may use
+                    # a keyword named w3.
+                    try:
+
+                        method(
+                            w3=self.chain.w3
+                        )
+
+                        logger.info(
+                            "Configured PonsDetector Web3 "
+                            "using %s(w3=...)",
+                            method_name,
+                        )
+
+                        configured = True
+
+                        break
+
+                    except Exception:
+
+                        logger.exception(
+                            "PonsDetector %s() failed",
+                            method_name,
+                        )
+
+                except Exception:
+
+                    logger.exception(
+                        "PonsDetector %s() failed",
+                        method_name,
+                    )
+
+        # --------------------------------------------------------------
+        # Direct attribute fallback.
+        #
+        # Your error specifically says:
+        #
+        # "PonsDetector Web3 instance has not been configured"
+        #
+        # so the detector almost certainly checks self.w3.
+        # --------------------------------------------------------------
+
+        if not configured:
+
+            try:
+
+                self.pons.w3 = self.chain.w3
+
+                configured = (
+                    getattr(
+                        self.pons,
+                        "w3",
+                        None,
+                    )
+                    is self.chain.w3
+                )
+
+                if configured:
+
+                    logger.info(
+                        "Configured PonsDetector.w3 "
+                        "directly"
+                    )
+
+            except Exception:
+
+                logger.exception(
+                    "Could not configure "
+                    "PonsDetector Web3"
+                )
+
+        if not configured:
+
+            raise RuntimeError(
+                "Could not configure PonsDetector "
+                "with the ChainClient Web3 instance"
+            )
 
     # ======================================================================
     # START BLOCK
@@ -846,7 +983,7 @@ class RobinhoodBot:
     def get_start_block(self) -> int:
 
         # ------------------------------------------------------------------
-        # DATABASE CHECKPOINT
+        # Existing checkpoint
         # ------------------------------------------------------------------
 
         try:
@@ -867,9 +1004,7 @@ class RobinhoodBot:
 
             try:
 
-                block = int(
-                    saved
-                )
+                block = int(saved)
 
                 logger.info(
                     "Resuming from block %s",
@@ -889,7 +1024,7 @@ class RobinhoodBot:
                 )
 
         # ------------------------------------------------------------------
-        # EXPLICIT START_BLOCK
+        # Explicit START_BLOCK
         # ------------------------------------------------------------------
 
         start_block_env = os.getenv(
@@ -919,7 +1054,7 @@ class RobinhoodBot:
                 )
 
         # ------------------------------------------------------------------
-        # PONS START BLOCK
+        # Pons known deployment start
         # ------------------------------------------------------------------
 
         pons_start = getattr(
@@ -930,14 +1065,12 @@ class RobinhoodBot:
 
         if pons_start is None:
 
-            pons_start = getattr(
-                PonsDetector,
-                "start_block",
-                0,
+            pons_start = (
+                PonsDetector.start_block
             )
 
         # ------------------------------------------------------------------
-        # BOUNDED BACKFILL
+        # Normal bounded backfill
         # ------------------------------------------------------------------
 
         latest = (
@@ -989,11 +1122,15 @@ class RobinhoodBot:
         try:
 
             # --------------------------------------------------------------
-            # CORRECT CURRENT API
+            # Your current PonsDetector API is:
             #
-            # PonsDetector.decode_launch(log)
+            #     decode_launch(log)
             #
-            # Web3 has already been configured on the detector above.
+            # NOT:
+            #
+            #     decode_launch(w3, log)
+            #
+            # Web3 was configured during initialization above.
             # --------------------------------------------------------------
 
             launch = (
@@ -1006,7 +1143,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # TOKEN
+            # Extract basic launch information
             # --------------------------------------------------------------
 
             token_address = normalize_address(
@@ -1025,10 +1162,6 @@ class RobinhoodBot:
                 )
 
                 return
-
-            # --------------------------------------------------------------
-            # BASIC FIELDS
-            # --------------------------------------------------------------
 
             detector_name = get_value(
                 launch,
@@ -1070,15 +1203,7 @@ class RobinhoodBot:
                 "hex",
             ):
 
-                try:
-
-                    tx_hash = tx_hash.hex()
-
-                except Exception:
-
-                    tx_hash = str(
-                        tx_hash
-                    )
+                tx_hash = tx_hash.hex()
 
             if not tx_hash:
 
@@ -1092,21 +1217,12 @@ class RobinhoodBot:
                     "hex",
                 ):
 
-                    try:
-
-                        tx_hash = raw_tx.hex()
-
-                    except Exception:
-
-                        tx_hash = str(
-                            raw_tx
-                        )
+                    tx_hash = raw_tx.hex()
 
                 else:
 
                     tx_hash = str(
-                        raw_tx
-                        or ""
+                        raw_tx or ""
                     )
 
             block_number = get_value(
@@ -1146,7 +1262,7 @@ class RobinhoodBot:
             )
 
             # --------------------------------------------------------------
-            # DUPLICATE KEY
+            # DUPLICATE PROTECTION
             # --------------------------------------------------------------
 
             unique_key = (
@@ -1184,7 +1300,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # LOG DETECTION
+            # Log launch
             # --------------------------------------------------------------
 
             logger.info(
@@ -1200,7 +1316,7 @@ class RobinhoodBot:
             )
 
             # --------------------------------------------------------------
-            # DATABASE INSERT
+            # Save database
             # --------------------------------------------------------------
 
             inserted = False
@@ -1270,7 +1386,8 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # EXPLICIT FALSE = DUPLICATE
+            # None means success for some DB implementations.
+            # False explicitly means duplicate.
             # --------------------------------------------------------------
 
             if inserted is False:
@@ -1283,7 +1400,7 @@ class RobinhoodBot:
                 return
 
             # --------------------------------------------------------------
-            # TELEGRAM
+            # Telegram
             # --------------------------------------------------------------
 
             message = (
@@ -1324,6 +1441,14 @@ class RobinhoodBot:
                         "Telegram message ID"
                     )
 
+            else:
+
+                logger.warning(
+                    "Launch saved but Telegram "
+                    "alert was not sent: %s",
+                    token_address,
+                )
+
         except Exception:
 
             logger.exception(
@@ -1331,7 +1456,7 @@ class RobinhoodBot:
             )
 
     # ======================================================================
-    # TELEGRAM MESSAGE
+    # TELEGRAM FORMAT
     # ======================================================================
 
     def format_launch_message(
@@ -1387,15 +1512,7 @@ class RobinhoodBot:
             "hex",
         ):
 
-            try:
-
-                tx_hash = tx_hash.hex()
-
-            except Exception:
-
-                tx_hash = str(
-                    tx_hash
-                )
+            tx_hash = tx_hash.hex()
 
         block_number = get_value(
             launch,
@@ -1463,9 +1580,7 @@ class RobinhoodBot:
             ]
         )
 
-        return "\n".join(
-            lines
-        )
+        return "\n".join(lines)
 
     # ======================================================================
     # SCAN RANGE
@@ -1486,10 +1601,6 @@ class RobinhoodBot:
             to_block,
         )
 
-        # --------------------------------------------------------------
-        # GET PONS EVENTS
-        # --------------------------------------------------------------
-
         logs = self.get_pons_logs(
             from_block,
             to_block,
@@ -1503,10 +1614,6 @@ class RobinhoodBot:
             to_block,
         )
 
-        # --------------------------------------------------------------
-        # PROCESS EVENTS
-        # --------------------------------------------------------------
-
         for log in logs:
 
             self.process_pons_log(
@@ -1514,7 +1621,7 @@ class RobinhoodBot:
             )
 
         # --------------------------------------------------------------
-        # CHECKPOINT ONLY AFTER SCAN
+        # Checkpoint only after the RPC scan completed.
         # --------------------------------------------------------------
 
         self.db.set_state(
@@ -1568,16 +1675,16 @@ class RobinhoodBot:
                     end,
                 )
 
-                # Do not advance past a failed range.
-                time.sleep(
-                    5
-                )
+                # ------------------------------------------------------
+                # Don't advance the block.
+                # Retry the same range.
+                # ------------------------------------------------------
+
+                time.sleep(5)
 
                 continue
 
-            current = (
-                end + 1
-            )
+            current = end + 1
 
             logger.info(
                 "Backfill at block %s",
@@ -1591,7 +1698,7 @@ class RobinhoodBot:
             )
 
     # ======================================================================
-    # LIVE LOOP
+    # LIVE MONITOR
     # ======================================================================
 
     def live_loop(self):
@@ -1600,19 +1707,9 @@ class RobinhoodBot:
             "Entering live monitoring mode"
         )
 
-        try:
-
-            saved = self.db.get_state(
-                "last_scanned_block"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Could not read live scan checkpoint"
-            )
-
-            saved = None
+        saved = self.db.get_state(
+            "last_scanned_block"
+        )
 
         if saved is not None:
 
@@ -1678,9 +1775,7 @@ class RobinhoodBot:
                     "Live monitoring error"
                 )
 
-                time.sleep(
-                    5
-                )
+                time.sleep(5)
 
     # ======================================================================
     # SHUTDOWN
@@ -1719,7 +1814,7 @@ class RobinhoodBot:
 
 
 # ============================================================================
-# MAIN
+# MAIN ENTRYPOINT
 # ============================================================================
 
 def main():
